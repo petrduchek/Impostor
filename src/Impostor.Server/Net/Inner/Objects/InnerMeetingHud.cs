@@ -1,11 +1,12 @@
 ﻿using System;
-using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading.Tasks;
 using Impostor.Api;
 using Impostor.Api.Events.Managers;
 using Impostor.Api.Innersloth;
 using Impostor.Api.Net;
+using Impostor.Api.Net.Inner;
 using Impostor.Api.Net.Messages;
 using Impostor.Api.Net.Messages.Rpcs;
 using Impostor.Server.Events.Meeting;
@@ -19,34 +20,20 @@ namespace Impostor.Server.Net.Inner.Objects
     {
         private readonly ILogger<InnerMeetingHud> _logger;
         private readonly IEventManager _eventManager;
-        private readonly Game _game;
-        private readonly GameNet _gameNet;
+
+        [AllowNull]
         private PlayerVoteArea[] _playerStates;
 
-        public InnerMeetingHud(ILogger<InnerMeetingHud> logger, IEventManager eventManager, Game game)
+        public InnerMeetingHud(Game game, ILogger<InnerMeetingHud> logger, IEventManager eventManager) : base(game)
         {
             _logger = logger;
             _eventManager = eventManager;
-            _game = game;
-            _gameNet = game.GameNet;
             _playerStates = null;
 
             Components.Add(this);
         }
 
         public byte ReporterId { get; private set; }
-
-        private void PopulateButtons(byte reporter)
-        {
-            _playerStates = _gameNet.GameData.Players
-                .Select(x =>
-                {
-                    var area = new PlayerVoteArea(this, x.Key);
-                    area.SetDead(x.Value.PlayerId == reporter, x.Value.Disconnected || x.Value.IsDead);
-                    return area;
-                })
-                .ToArray();
-        }
 
         public override ValueTask<bool> SerializeAsync(IMessageWriter writer, bool initialState)
         {
@@ -132,9 +119,6 @@ namespace Impostor.Server.Net.Inner.Objects
                     break;
                 }
 
-                case RpcCalls.CustomRpc:
-                    return await HandleCustomRpc(reader, _game);
-
                 default:
                     return await UnregisteredCall(call, sender);
             }
@@ -142,19 +126,31 @@ namespace Impostor.Server.Net.Inner.Objects
             return true;
         }
 
+        private void PopulateButtons(byte reporter)
+        {
+            _playerStates = Game.GameNet.GameData!.Players
+                .Select(x =>
+                {
+                    var area = new PlayerVoteArea(this, x.Key);
+                    area.SetDead(x.Value.PlayerId == reporter, x.Value.Disconnected || x.Value.IsDead);
+                    return area;
+                })
+                .ToArray();
+        }
+
         private async ValueTask HandleVotingComplete(ClientPlayer sender, ReadOnlyMemory<byte> states, byte playerId, bool tie)
         {
             if (playerId != byte.MaxValue)
             {
-                var player = _game.GameNet.GameData.GetPlayerById(playerId);
-                if (player != null)
+                var player = Game.GameNet.GameData!.GetPlayerById(playerId);
+                if (player?.Controller != null)
                 {
                     player.Controller.Die(DeathReason.Exile);
-                    await _eventManager.CallAsync(new PlayerExileEvent(_game, sender, player.Controller));
+                    await _eventManager.CallAsync(new PlayerExileEvent(Game, sender, player.Controller));
                 }
             }
 
-            await _eventManager.CallAsync(new MeetingEndedEvent(_game, this));
+            await _eventManager.CallAsync(new MeetingEndedEvent(Game, this));
         }
 
         private async ValueTask<bool> HandleCastVote(ClientPlayer sender, ClientPlayer? target, byte playerId, sbyte suspectPlayerId)

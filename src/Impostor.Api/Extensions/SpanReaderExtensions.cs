@@ -5,7 +5,7 @@ using System.Runtime.CompilerServices;
 namespace Impostor.Api
 {
     /// <summary>
-    /// Priovides a StreamReader-like api throught extensions
+    ///     Priovides a StreamReader-like api throught extensions.
     /// </summary>
     public static class SpanReaderExtensions
     {
@@ -35,9 +35,7 @@ namespace Impostor.Api
         {
             var original = Advance<float>(ref input);
 
-            // BitConverter.Int32BitsToSingle
-            // Doesn't exist in net 2.0 for some reason
-            return Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(original));
+            return BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(original));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -46,18 +44,12 @@ namespace Impostor.Api
             return input.ReadByte() != 0;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static unsafe float Int32BitsToSingle(int value)
-        {
-            return *((float*)&value);
-        }
-
         /// <summary>
-        /// Advances the position of <see cref="input"/> by the size of <see cref="T"/>.
+        ///     Advances the position of <paramref name="input" /> by the size of <typeparamref name="T" />.
         /// </summary>
         /// <typeparam name="T">Type that will be read.</typeparam>
         /// <param name="input">input "stream"/span.</param>
-        /// <returns>The original input</returns>
+        /// <returns>The original input.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static unsafe ReadOnlySpan<byte> Advance<T>(ref ReadOnlySpan<byte> input)
             where T : unmanaged

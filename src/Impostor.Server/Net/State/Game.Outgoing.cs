@@ -2,6 +2,7 @@
 using System.Threading.Tasks;
 using Impostor.Api.Innersloth;
 using Impostor.Api.Net;
+using Impostor.Api.Net.Inner;
 using Impostor.Api.Net.Messages;
 using Impostor.Api.Net.Messages.S2C;
 using Impostor.Hazel;
@@ -55,7 +56,7 @@ namespace Impostor.Server.Net.State
 
             writer.StartMessage(GameDataTag.RpcFlag);
             writer.WritePacked(targetNetId);
-            writer.Write((byte) callId);
+            writer.Write((byte)callId);
 
             return writer;
         }
