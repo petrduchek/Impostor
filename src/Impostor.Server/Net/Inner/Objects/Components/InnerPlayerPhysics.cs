@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using Impostor.Api.Events.Managers;
 using Impostor.Api.Innersloth;
+using Impostor.Api.Innersloth.Maps;
 using Impostor.Api.Net;
 using Impostor.Api.Net.Inner;
 using Impostor.Api.Net.Messages;
@@ -65,7 +66,18 @@ namespace Impostor.Server.Net.Inner.Objects.Components
                             throw new ArgumentOutOfRangeException(nameof(call), call, null);
                     }
 
-                    await _eventManager.CallAsync(new PlayerVentEvent(Game, sender, _playerControl, (VentLocation)ventId, call == RpcCalls.EnterVent));
+                    var vent = Game.GameNet.ShipStatus!.Data.Vents[ventId];
+
+                    switch (call)
+                    {
+                        case RpcCalls.EnterVent:
+                            await _eventManager.CallAsync(new PlayerEnterVentEvent(Game, sender, _playerControl, vent));
+                            break;
+                        case RpcCalls.ExitVent:
+                            await _eventManager.CallAsync(new PlayerExitVentEvent(Game, sender, _playerControl, vent));
+                            break;
+                    }
+
                     break;
 
                 case RpcCalls.ClimbLadder:
