@@ -131,7 +131,6 @@ namespace Impostor.Server.Net.Inner.Objects
         private void PopulateButtons(byte reporter)
         {
             _playerStates = Game.GameNet.GameData!.Players
-                .OrderBy(x => x.Value.Controller?.OwnerId)
                 .Select(x =>
                 {
                     var area = new PlayerVoteArea(this, x.Key);
