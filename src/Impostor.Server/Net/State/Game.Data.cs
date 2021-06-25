@@ -11,6 +11,7 @@ using Impostor.Server.Events.Player;
 using Impostor.Server.Net.Inner;
 using Impostor.Server.Net.Inner.Objects;
 using Impostor.Server.Net.Inner.Objects.Components;
+using Impostor.Server.Net.Inner.Objects.ShipStatus;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -18,8 +19,6 @@ namespace Impostor.Server.Net.State
 {
     internal partial class Game
     {
-        private const int FakeClientId = int.MaxValue - 1;
-
         /// <summary>
         ///     Used for global object, spawned by the host.
         /// </summary>
@@ -33,14 +32,15 @@ namespace Impostor.Server.Net.State
 
         private static readonly Type[] SpawnableObjects =
         {
-            typeof(InnerShipStatus), // ShipStatus
+            typeof(InnerSkeldShipStatus),
             typeof(InnerMeetingHud),
             typeof(InnerLobbyBehaviour),
             typeof(InnerGameData),
             typeof(InnerPlayerControl),
-            typeof(InnerShipStatus), // HeadQuarters
-            typeof(InnerShipStatus), // PlanetMap
-            typeof(InnerShipStatus), // AprilShipStatus
+            typeof(InnerMiraShipStatus),
+            typeof(InnerPolusShipStatus),
+            typeof(InnerSkeldShipStatus), // April fools skeld
+            typeof(InnerAirshipStatus),
         };
 
         private readonly List<InnerNetObject> _allObjects = new List<InnerNetObject>();
@@ -104,7 +104,8 @@ namespace Impostor.Server.Net.State
                         {
                             if (!await obj.HandleRpcAsync(sender, target, (RpcCalls)reader.ReadByte(), reader))
                             {
-                                return false;
+                                parent.RemoveMessage(reader);
+                                continue;
                             }
                         }
                         else
@@ -131,13 +132,6 @@ namespace Impostor.Server.Net.State
                         {
                             var innerNetObject = (InnerNetObject)ActivatorUtilities.CreateInstance(_serviceProvider, SpawnableObjects[objectId], this);
                             var ownerClientId = reader.ReadPackedInt32();
-
-                            // Prevent fake client from being broadcasted.
-                            // TODO: Remove message from stream properly.
-                            if (ownerClientId == FakeClientId)
-                            {
-                                return false;
-                            }
 
                             innerNetObject.SpawnFlags = (SpawnFlags)reader.ReadByte();
 
@@ -255,14 +249,14 @@ namespace Impostor.Server.Net.State
                         break;
                     }
 
-                    case GameDataTag.ClientInfoFlag:
+                    case GameDataTag.ConsoleDeclareClientPlatformFlag:
                     {
                         var clientId = reader.ReadPackedInt32();
                         var platform = (RuntimePlatform)reader.ReadPackedInt32();
 
                         if (clientId != sender.Client.Id)
                         {
-                            if (await sender.Client.ReportCheatAsync(new CheatContext(nameof(GameDataTag.ClientInfoFlag)), "Client sent info with wrong client id"))
+                            if (await sender.Client.ReportCheatAsync(new CheatContext(nameof(GameDataTag.ConsoleDeclareClientPlatformFlag)), "Client sent info with wrong client id"))
                             {
                                 return false;
                             }
@@ -345,10 +339,17 @@ namespace Impostor.Server.Net.State
 
                 case InnerMeetingHud meetingHud:
                 {
+                    foreach (var player in _players.Values)
+                    {
+                        player.Character?.NetworkTransform.OnPlayerSpawn();
+                    }
+
                     await _eventManager.CallAsync(new MeetingStartedEvent(this, meetingHud));
                     break;
                 }
             }
+
+            await netObj.OnSpawnAsync();
         }
 
         private async ValueTask OnDestroyAsync(InnerNetObject netObj)
@@ -419,8 +420,6 @@ namespace Impostor.Server.Net.State
             }
 
             _allObjectsFast.Remove(obj.NetId);
-
-            obj.NetId = uint.MaxValue;
         }
     }
 }
