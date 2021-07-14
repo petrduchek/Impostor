@@ -25,7 +25,6 @@ namespace Impostor.Server.Net.State
             if (HostId == -1)
             {
                 HostId = player.Client.Id;
-                await InitGameDataAsync(player);
             }
 
             await _eventManager.CallAsync(new GamePlayerJoinedEvent(this, player));
@@ -40,7 +39,7 @@ namespace Impostor.Server.Net.State
 
             _logger.LogInformation("{0} - Player {1} ({2}) has left.", Code, player.Client.Name, playerId);
 
-            if (GameState == GameStates.Starting || GameState == GameStates.Started)
+            if (GameState == GameStates.Starting || GameState == GameStates.Started || GameState == GameStates.NotStarted)
             {
                 if (player.Character?.PlayerInfo != null)
                 {
@@ -51,8 +50,15 @@ namespace Impostor.Server.Net.State
 
             player.Client.Player = null;
 
+            // Host migration.
+            if (HostId == playerId)
+            {
+                await MigrateHost();
+                await _eventManager.CallAsync(new GameHostChangedEvent(this, player, Host));
+            }
+
             // Game is empty, remove it.
-            if (_players.IsEmpty)
+            if (_players.IsEmpty || Host == null)
             {
                 GameState = GameStates.Destroyed;
 
@@ -61,13 +67,7 @@ namespace Impostor.Server.Net.State
                 return true;
             }
 
-            // Host migration.
-            if (HostId == playerId)
-            {
-                await MigrateHost();
-            }
-
-            if (isBan && player.Client.Connection != null)
+            if (isBan)
             {
                 BanIp(player.Client.Connection.EndPoint.Address);
             }
@@ -98,7 +98,6 @@ namespace Impostor.Server.Net.State
 
             if (host == null)
             {
-                await EndAsync();
                 return;
             }
 

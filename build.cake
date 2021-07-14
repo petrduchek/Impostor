@@ -1,6 +1,6 @@
-#addin "nuget:?package=SharpZipLib&Version=1.3.0"
-#addin "nuget:?package=Cake.Compression&Version=0.2.4"
-#addin "nuget:?package=Cake.FileHelpers&Version=3.3.0"
+#addin "nuget:?package=SharpZipLib&Version=1.3.1"
+#addin "nuget:?package=Cake.Compression&Version=0.2.6"
+#addin "nuget:?package=Cake.FileHelpers&Version=4.0.1"
 
 var buildId = EnvironmentVariable("GITHUB_RUN_NUMBER") ?? EnvironmentVariable("APPVEYOR_BUILD_VERSION");
 var buildRelease = EnvironmentVariable("APPVEYOR_REPO_TAG") == "true";
@@ -52,7 +52,11 @@ private void ImpostorPublish(string name, string project, string runtime, bool i
         }
     }
 
-    Zip(projBuildDir, buildDir.CombineWithFilePath(projBuildName + ".zip"));
+    if (runtime == "win-x64") {
+        Zip(projBuildDir, buildDir.CombineWithFilePath(projBuildName + ".zip"));
+    } else {
+        GZipCompress(projBuildDir, buildDir.CombineWithFilePath(projBuildName + ".tar.gz"));
+    }
 }
 
 private void ImpostorPublishNF(string name, string project) {
@@ -110,13 +114,6 @@ Task("Build")
         DotNetCoreBuild("./src/Impostor.Tests/Impostor.Tests.csproj", new DotNetCoreBuildSettings {
             Configuration = configuration,
         });
-
-        // Client.
-        ImpostorPublishNF("Impostor-Patcher", "./src/Impostor.Patcher/Impostor.Patcher.WinForms/Impostor.Patcher.WinForms.csproj");
-
-        ImpostorPublish("Impostor-Patcher-Cli", "./src/Impostor.Patcher/Impostor.Patcher.Cli/Impostor.Patcher.Cli.csproj", "win-x64");
-        ImpostorPublish("Impostor-Patcher-Cli", "./src/Impostor.Patcher/Impostor.Patcher.Cli/Impostor.Patcher.Cli.csproj", "osx-x64");
-        ImpostorPublish("Impostor-Patcher-Cli", "./src/Impostor.Patcher/Impostor.Patcher.Cli/Impostor.Patcher.Cli.csproj", "linux-x64");
             
         // Server.
         ImpostorPublish("Impostor-Server", "./src/Impostor.Server/Impostor.Server.csproj", "win-x64", true);

@@ -1,9 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Impostor.Api;
+using Impostor.Api.Events.Managers;
 using Impostor.Api.Net;
+using Impostor.Api.Net.Custom;
+using Impostor.Api.Net.Inner;
 using Impostor.Api.Net.Inner.Objects;
 using Impostor.Api.Net.Messages;
 using Impostor.Api.Net.Messages.Rpcs;
@@ -17,17 +20,17 @@ namespace Impostor.Server.Net.Inner.Objects
     internal partial class InnerGameData : InnerNetObject, IInnerGameData
     {
         private readonly ILogger<InnerGameData> _logger;
-        private readonly Game _game;
+        private readonly IEventManager _eventManager;
         private readonly ConcurrentDictionary<byte, InnerPlayerInfo> _allPlayers;
 
-        public InnerGameData(ILogger<InnerGameData> logger, Game game, IServiceProvider serviceProvider)
+        public InnerGameData(ICustomMessageManager<ICustomRpc> customMessageManager, Game game, ILogger<InnerGameData> logger, IEventManager eventManager, IServiceProvider serviceProvider) : base(customMessageManager, game)
         {
             _logger = logger;
-            _game = game;
+            _eventManager = eventManager;
             _allPlayers = new ConcurrentDictionary<byte, InnerPlayerInfo>();
 
             Components.Add(this);
-            Components.Add(ActivatorUtilities.CreateInstance<InnerVoteBanSystem>(serviceProvider));
+            Components.Add(ActivatorUtilities.CreateInstance<InnerVoteBanSystem>(serviceProvider, game));
         }
 
         public int PlayerCount => _allPlayers.Count;
@@ -75,7 +78,25 @@ namespace Impostor.Server.Net.Inner.Objects
             }
             else
             {
-                throw new NotImplementedException("This shouldn't happen, according to Among Us disassembly.");
+                while (reader.Position < reader.Length)
+                {
+                    var inner = reader.ReadMessage();
+                    var playerInfo = this.GetPlayerById(inner.Tag);
+                    if (playerInfo != null)
+                    {
+                        playerInfo.Deserialize(inner);
+                    }
+                    else
+                    {
+                        playerInfo = new InnerPlayerInfo(inner.Tag);
+                        playerInfo.Deserialize(inner);
+
+                        if (!_allPlayers.TryAdd(playerInfo.PlayerId, playerInfo))
+                        {
+                            throw new ImpostorException("Failed to add player to InnerGameData.");
+                        }
+                    }
+                }
             }
         }
 
@@ -95,51 +116,29 @@ namespace Impostor.Server.Net.Inner.Objects
                     break;
                 }
 
-                case RpcCalls.UpdateGameData:
-                {
-                    while (reader.Position < reader.Length)
-                    {
-                        using var message = reader.ReadMessage();
-                        var player = GetPlayerById(message.Tag);
-                        if (player != null)
-                        {
-                            player.Deserialize(message);
-                        }
-                        else
-                        {
-                            var playerInfo = new InnerPlayerInfo(message.Tag);
-
-                            playerInfo.Deserialize(reader);
-
-                            if (!_allPlayers.TryAdd(playerInfo.PlayerId, playerInfo))
-                            {
-                                throw new ImpostorException("Failed to add player to InnerGameData.");
-                            }
-                        }
-                    }
-
-                    break;
-                }
-
-                case RpcCalls.CustomRpc:
-                    return await HandleCustomRpc(reader, _game);
-
                 default:
-                    return await UnregisteredCall(call, sender);
+                    return await base.HandleRpcAsync(sender, target, call, reader);
             }
 
             return true;
         }
 
-        internal void AddPlayer(InnerPlayerControl control)
+        internal InnerPlayerInfo? AddPlayer(InnerPlayerControl control)
         {
             var playerId = control.PlayerId;
             var playerInfo = new InnerPlayerInfo(control.PlayerId);
 
             if (_allPlayers.TryAdd(playerId, playerInfo))
             {
-                control.PlayerInfo = playerInfo;
+                return playerInfo;
             }
+
+            return null;
+        }
+
+        internal void RemovePlayer(InnerPlayerControl control)
+        {
+            _allPlayers.TryRemove(control.PlayerInfo.PlayerId, out _);
         }
 
         private void SetTasks(byte playerId, ReadOnlyMemory<byte> taskTypeIds)
@@ -158,12 +157,15 @@ namespace Impostor.Server.Net.Inner.Objects
 
             player.Tasks = new List<TaskInfo>(taskTypeIds.Length);
 
-            foreach (var taskId in taskTypeIds.ToArray())
+            var taskId = 0u;
+            foreach (var taskTypeId in taskTypeIds.Span)
             {
-                player.Tasks.Add(new TaskInfo
-                {
-                    Id = taskId,
-                });
+                player.Tasks.Add(new TaskInfo(
+                    player,
+                    _eventManager,
+                    taskId++,
+                    Game.GameNet!.ShipStatus!.Data.Tasks[taskTypeId]
+                ));
             }
         }
     }

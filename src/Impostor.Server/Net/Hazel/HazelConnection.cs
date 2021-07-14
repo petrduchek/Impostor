@@ -25,16 +25,18 @@ namespace Impostor.Server.Net.Hazel
 
         public bool IsConnected => InnerConnection.State == ConnectionState.Connected;
 
-        public IClient Client { get; set; }
+        public IClient? Client { get; set; }
+
+        public float AveragePing => InnerConnection is NetworkConnection networkConnection ? networkConnection.AveragePingMs : 0;
 
         public ValueTask SendAsync(IMessageWriter writer)
         {
             return InnerConnection.SendAsync(writer);
         }
 
-        public ValueTask DisconnectAsync(string reason)
+        public ValueTask DisconnectAsync(string? reason, IMessageWriter? writer = null)
         {
-            return InnerConnection.Disconnect(reason);
+            return InnerConnection.Disconnect(reason, writer as MessageWriter);
         }
 
         public void DisposeInnerConnection()

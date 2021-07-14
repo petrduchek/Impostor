@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net;
 using System.Numerics;
@@ -60,11 +61,11 @@ namespace Impostor.Server.Net.State
 
         public bool IsPublic { get; private set; }
 
+        public string? DisplayName { get; set; }
+
         public int HostId { get; private set; }
 
         public GameStates GameState { get; private set; }
-
-        internal GameNet GameNet { get; }
 
         public GameOptionsData Options { get; }
 
@@ -76,7 +77,9 @@ namespace Impostor.Server.Net.State
 
         public IEnumerable<IClientPlayer> Players => _players.Select(p => p.Value);
 
-        public bool TryGetPlayer(int id, out ClientPlayer player)
+        internal GameNet GameNet { get; }
+
+        public bool TryGetPlayer(int id, [MaybeNullWhen(false)] out ClientPlayer player)
         {
             if (_players.TryGetValue(id, out var result))
             {
@@ -88,7 +91,7 @@ namespace Impostor.Server.Net.State
             return false;
         }
 
-        public IClientPlayer GetClientPlayer(int clientId)
+        public IClientPlayer? GetClientPlayer(int clientId)
         {
             return _players.TryGetValue(clientId, out var clientPlayer) ? clientPlayer : null;
         }
@@ -97,21 +100,16 @@ namespace Impostor.Server.Net.State
         {
             if (GameState == GameStates.Starting)
             {
-                for (var i = 0; i < _players.Values.Count; i++)
+                foreach (var player in _players.Values)
                 {
-                    var player = _players.Values.ElementAt(i);
-                    await player.Character!.NetworkTransform.SetPositionAsync(player, MapSpawn.Maps[Options.Map].GetSpawnLocation(i, PlayerCount, true), Vector2.Zero);
+                    player.Character?.NetworkTransform.OnPlayerSpawn();
+                    await player.Character!.NetworkTransform.SetPositionAsync(player, GameNet.ShipStatus!.GetSpawnLocation(player.Character, PlayerCount, true), Vector2.Zero);
                 }
 
                 GameState = GameStates.Started;
 
                 await _eventManager.CallAsync(new GameStartedEvent(this));
             }
-        }
-
-        public ValueTask EndAsync()
-        {
-            return _gameManager.RemoveAsync(Code);
         }
 
         private ValueTask BroadcastJoinMessage(IMessageWriter message, bool clear, ClientPlayer player)
@@ -125,7 +123,7 @@ namespace Impostor.Server.Net.State
         {
             return Players
                 .Where(filter)
-                .Select(p => p.Client.Connection);
+                .Select(p => p.Client.Connection)!;
         }
     }
 }

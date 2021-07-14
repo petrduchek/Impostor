@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading.Tasks;
 using Impostor.Api;
@@ -7,13 +8,15 @@ using Impostor.Api.Events.Managers;
 using Impostor.Api.Innersloth;
 using Impostor.Api.Innersloth.Customization;
 using Impostor.Api.Net;
+using Impostor.Api.Net.Custom;
+using Impostor.Api.Net.Inner;
 using Impostor.Api.Net.Inner.Objects;
 using Impostor.Api.Net.Messages;
 using Impostor.Api.Net.Messages.Rpcs;
+using Impostor.Api.Utils;
 using Impostor.Server.Events.Player;
 using Impostor.Server.Net.Inner.Objects.Components;
 using Impostor.Server.Net.State;
-using Impostor.Server.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -21,20 +24,20 @@ namespace Impostor.Server.Net.Inner.Objects
 {
     internal partial class InnerPlayerControl : InnerNetObject
     {
+        private static readonly byte ColorsCount = (byte)Enum.GetValues<ColorType>().Length;
+
         private readonly ILogger<InnerPlayerControl> _logger;
         private readonly IEventManager _eventManager;
-        private readonly Game _game;
-        private readonly ServerEnvironment _serverEnvironment;
+        private readonly IDateTimeProvider _dateTimeProvider;
 
-        public InnerPlayerControl(ILogger<InnerPlayerControl> logger, IServiceProvider serviceProvider, IEventManager eventManager, Game game, ServerEnvironment serverEnvironment)
+        public InnerPlayerControl(ICustomMessageManager<ICustomRpc> customMessageManager, Game game, ILogger<InnerPlayerControl> logger, IServiceProvider serviceProvider, IEventManager eventManager, IDateTimeProvider dateTimeProvider) : base(customMessageManager, game)
         {
             _logger = logger;
             _eventManager = eventManager;
-            _game = game;
-            _serverEnvironment = serverEnvironment;
+            _dateTimeProvider = dateTimeProvider;
 
-            Physics = ActivatorUtilities.CreateInstance<InnerPlayerPhysics>(serviceProvider, this, _eventManager, _game);
-            NetworkTransform = ActivatorUtilities.CreateInstance<InnerCustomNetworkTransform>(serviceProvider, this, _game);
+            Physics = ActivatorUtilities.CreateInstance<InnerPlayerPhysics>(serviceProvider, this, _eventManager, game);
+            NetworkTransform = ActivatorUtilities.CreateInstance<InnerCustomNetworkTransform>(serviceProvider, this, game);
 
             Components.Add(this);
             Components.Add(Physics);
@@ -51,6 +54,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
         public InnerCustomNetworkTransform NetworkTransform { get; }
 
+        [AllowNull]
         public InnerPlayerInfo PlayerInfo { get; internal set; }
 
         internal Queue<string> RequestedPlayerName { get; } = new Queue<string>();
@@ -75,12 +79,6 @@ namespace Impostor.Server.Net.Inner.Objects
             }
 
             PlayerId = reader.ReadByte();
-        }
-
-        internal void Die(DeathReason reason)
-        {
-            PlayerInfo.IsDead = true;
-            PlayerInfo.LastDeathReason = reason;
         }
 
         public override async ValueTask<bool> HandleRpcAsync(ClientPlayer sender, ClientPlayer? target, RpcCalls call, IMessageReader reader)
@@ -117,7 +115,7 @@ namespace Impostor.Server.Net.Inner.Objects
                         return false;
                     }
 
-                    Rpc02SyncSettings.Deserialize(reader, _game.Options);
+                    Rpc02SyncSettings.Deserialize(reader, Game.Options);
                     break;
                 }
 
@@ -212,12 +210,12 @@ namespace Impostor.Server.Net.Inner.Objects
 
                 case RpcCalls.MurderPlayer:
                 {
-                    if (!await ValidateOwnership(call, sender) || !await ValidateImpostor(RpcCalls.MurderPlayer, sender, PlayerInfo))
+                    if (!await ValidateOwnership(call, sender) || !await ValidateImpostor(call, sender, PlayerInfo))
                     {
                         return false;
                     }
 
-                    Rpc12MurderPlayer.Deserialize(reader, _game, out var murdered);
+                    Rpc12MurderPlayer.Deserialize(reader, Game, out var murdered);
                     return await HandleMurderPlayer(sender, murdered);
                 }
 
@@ -288,14 +286,39 @@ namespace Impostor.Server.Net.Inner.Objects
                     return await HandleSetStartCounter(sender, sequenceId, startCounter);
                 }
 
-                case RpcCalls.CustomRpc:
-                    return await HandleCustomRpc(reader, _game);
+                case RpcCalls.UsePlatform:
+                {
+                    if (!await ValidateOwnership(call, sender))
+                    {
+                        return false;
+                    }
+
+                    Rpc32UsePlatform.Deserialize(reader);
+                    break;
+                }
+
+                case RpcCalls.SendQuickChat:
+                {
+                    if (!await ValidateOwnership(call, sender))
+                    {
+                        return false;
+                    }
+
+                    // TODO: deserialize and expose the result in an API
+                    break;
+                }
 
                 default:
-                    return await UnregisteredCall(call, sender);
+                    return await base.HandleRpcAsync(sender, target, call, reader);
             }
 
             return true;
+        }
+
+        internal void Die(DeathReason reason)
+        {
+            PlayerInfo.IsDead = true;
+            PlayerInfo.LastDeathReason = reason;
         }
 
         private async ValueTask HandleCompleteTask(ClientPlayer sender, uint taskId)
@@ -305,7 +328,7 @@ namespace Impostor.Server.Net.Inner.Objects
             if (task != null)
             {
                 task.Complete = true;
-                await _eventManager.CallAsync(new PlayerCompletedTaskEvent(_game, sender, this, task));
+                await _eventManager.CallAsync(new PlayerCompletedTaskEvent(Game, sender, this, task));
             }
             else
             {
@@ -317,16 +340,16 @@ namespace Impostor.Server.Net.Inner.Objects
         {
             for (var i = 0; i < infectedIds.Length; i++)
             {
-                var player = _game.GameNet.GameData.GetPlayerById(infectedIds.Span[i]);
+                var player = Game.GameNet.GameData!.GetPlayerById(infectedIds.Span[i]);
                 if (player != null)
                 {
                     player.IsImpostor = true;
                 }
             }
 
-            if (_game.GameState == GameStates.Starting)
+            if (Game.GameState == GameStates.Starting)
             {
-                await _game.StartedAsync();
+                await Game.StartedAsync();
             }
         }
 
@@ -363,7 +386,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
         private async ValueTask<bool> HandleSetName(ClientPlayer sender, string name)
         {
-            if (_game.GameState == GameStates.Started)
+            if (Game.GameState == GameStates.Started)
             {
                 if (await sender.Client.ReportCheatAsync(RpcCalls.SetColor, "Client tried to set a name midgame"))
                 {
@@ -373,7 +396,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
             if (sender.IsOwner(this))
             {
-                if (_game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.PlayerName == name))
+                if (Game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.PlayerName == name))
                 {
                     if (await sender.Client.ReportCheatAsync(RpcCalls.SetName, "Client sent name that is already used"))
                     {
@@ -399,14 +422,14 @@ namespace Impostor.Server.Net.Inner.Objects
 
                 var expected = RequestedPlayerName.Dequeue();
 
-                if (_game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.PlayerName == expected))
+                if (Game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.PlayerName == expected))
                 {
                     var i = 1;
                     while (true)
                     {
-                        string text = expected + " " + i;
+                        var text = expected + " " + i;
 
-                        if (_game.Players.All(x => x.Character == null || x.Character == this || x.Character.PlayerInfo.PlayerName != text))
+                        if (Game.Players.All(x => x.Character == null || x.Character == this || x.Character.PlayerInfo.PlayerName != text))
                         {
                             expected = text;
                             break;
@@ -429,8 +452,6 @@ namespace Impostor.Server.Net.Inner.Objects
             return true;
         }
 
-        private static readonly byte ColorsCount = (byte)Enum.GetValues<ColorType>().Length;
-
         private async ValueTask<bool> HandleCheckColor(ClientPlayer sender, ColorType color)
         {
             if ((byte)color > ColorsCount)
@@ -448,7 +469,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
         private async ValueTask<bool> HandleSetColor(ClientPlayer sender, ColorType color)
         {
-            if (_game.GameState == GameStates.Started)
+            if (Game.GameState == GameStates.Started)
             {
                 if (await sender.Client.ReportCheatAsync(RpcCalls.SetColor, "Client tried to set a color midgame"))
                 {
@@ -458,7 +479,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
             if (sender.IsOwner(this))
             {
-                if (_game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.Color == color))
+                if (Game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.Color == color))
                 {
                     if (await sender.Client.ReportCheatAsync(RpcCalls.SetColor, "Client sent a color that is already used"))
                     {
@@ -476,7 +497,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
                 var expected = RequestedColorId.Dequeue();
 
-                while (_game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.Color == expected))
+                while (Game.Players.Any(x => x.Character != null && x.Character != this && x.Character.PlayerInfo.Color == expected))
                 {
                     expected = (ColorType)(((byte)expected + 1) % ColorsCount);
                 }
@@ -496,7 +517,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
         private async ValueTask<bool> HandleSetHat(ClientPlayer sender, HatType hat)
         {
-            if (_game.GameState == GameStates.Started && await sender.Client.ReportCheatAsync(RpcCalls.SetHat, "Client tried to change hat while not in lobby"))
+            if (Game.GameState == GameStates.Started && await sender.Client.ReportCheatAsync(RpcCalls.SetHat, "Client tried to change hat while not in lobby"))
             {
                 return false;
             }
@@ -508,7 +529,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
         private async ValueTask<bool> HandleSetSkin(ClientPlayer sender, SkinType skin)
         {
-            if (_game.GameState == GameStates.Started && await sender.Client.ReportCheatAsync(RpcCalls.SetSkin, "Client tried to change skin while not in lobby"))
+            if (Game.GameState == GameStates.Started && await sender.Client.ReportCheatAsync(RpcCalls.SetSkin, "Client tried to change skin while not in lobby"))
             {
                 return false;
             }
@@ -520,8 +541,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
         private async ValueTask<bool> HandleMurderPlayer(ClientPlayer sender, IInnerPlayerControl? target)
         {
-            // TODO record replay with timestamps
-            if (!_serverEnvironment.IsReplay && !PlayerInfo.CanMurder(_game))
+            if (!PlayerInfo.CanMurder(Game, _dateTimeProvider))
             {
                 if (await sender.Client.ReportCheatAsync(RpcCalls.MurderPlayer, "Client tried to murder too fast"))
                 {
@@ -537,12 +557,12 @@ namespace Impostor.Server.Net.Inner.Objects
                 }
             }
 
-            PlayerInfo.LastMurder = DateTimeOffset.UtcNow;
+            PlayerInfo.LastMurder = _dateTimeProvider.UtcNow - TimeSpan.FromMilliseconds(sender.Client.Connection.AveragePing);
 
-            if (!target.PlayerInfo.IsDead)
+            if (target != null && !target.PlayerInfo.IsDead)
             {
                 ((InnerPlayerControl)target).Die(DeathReason.Kill);
-                await _eventManager.CallAsync(new PlayerMurderEvent(_game, sender, this, target));
+                await _eventManager.CallAsync(new PlayerMurderEvent(Game, sender, this, target));
             }
 
             return true;
@@ -550,7 +570,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
         private async ValueTask<bool> HandleSendChat(ClientPlayer sender, string message)
         {
-            var @event = new PlayerChatEvent(_game, sender, this, message);
+            var @event = new PlayerChatEvent(Game, sender, this, message);
             await _eventManager.CallAsync(@event);
 
             return !@event.IsCancelled;
@@ -558,13 +578,13 @@ namespace Impostor.Server.Net.Inner.Objects
 
         private async ValueTask HandleStartMeeting(byte targetId)
         {
-            var deadPlayer = _game.GameNet.GameData.GetPlayerById(targetId)?.Controller;
-            await _eventManager.CallAsync(new PlayerStartMeetingEvent(_game, _game.GetClientPlayer(this.OwnerId), this, deadPlayer));
+            var deadPlayer = Game.GameNet.GameData!.GetPlayerById(targetId)?.Controller;
+            await _eventManager.CallAsync(new PlayerStartMeetingEvent(Game, Game.GetClientPlayer(this.OwnerId)!, this, deadPlayer));
         }
 
         private async ValueTask<bool> HandleSetPet(ClientPlayer sender, PetType pet)
         {
-            if (_game.GameState == GameStates.Started && await sender.Client.ReportCheatAsync(RpcCalls.SetPet, "Client tried to change pet while not in lobby"))
+            if (Game.GameState == GameStates.Started && await sender.Client.ReportCheatAsync(RpcCalls.SetPet, "Client tried to change pet while not in lobby"))
             {
                 return false;
             }
@@ -586,7 +606,7 @@ namespace Impostor.Server.Net.Inner.Objects
 
             if (startCounter != -1)
             {
-                await _eventManager.CallAsync(new PlayerSetStartCounterEvent(_game, sender, this, (byte)startCounter));
+                await _eventManager.CallAsync(new PlayerSetStartCounterEvent(Game, sender, this, (byte)startCounter));
             }
 
             return true;

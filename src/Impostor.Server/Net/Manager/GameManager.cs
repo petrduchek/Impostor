@@ -9,6 +9,7 @@ using Impostor.Api.Events.Managers;
 using Impostor.Api.Games;
 using Impostor.Api.Games.Managers;
 using Impostor.Api.Innersloth;
+using Impostor.Api.Net;
 using Impostor.Server.Config;
 using Impostor.Server.Events;
 using Impostor.Server.Net.Redirector;
@@ -42,46 +43,9 @@ namespace Impostor.Server.Net.Manager
 
         IEnumerable<IGame> IGameManager.Games => _games.Select(kv => kv.Value);
 
-        IGame IGameManager.Find(GameCode code) => Find(code);
+        IGame? IGameManager.Find(GameCode code) => Find(code);
 
-        public async ValueTask<IGame> CreateAsync(GameOptionsData options)
-        {
-            // TODO: Prevent duplicates when using server redirector using INodeProvider.
-            var (success, game) = await TryCreateAsync(options);
-
-            for (int i = 0; i < 10 && !success; i++)
-            {
-                (success, game) = await TryCreateAsync(options);
-            }
-
-            if (!success)
-            {
-                throw new ImpostorException("Could not create new game"); // TODO: Fix generic exception.
-            }
-
-            return game;
-        }
-
-        private async ValueTask<(bool success, Game game)> TryCreateAsync(GameOptionsData options)
-        {
-            var gameCode = _gameCodeFactory.Create();
-            var gameCodeStr = gameCode.Code;
-            var game = ActivatorUtilities.CreateInstance<Game>(_serviceProvider, _publicIp, gameCode, options);
-
-            if (await _nodeLocator.ExistsAsync(gameCodeStr) || !_games.TryAdd(gameCode, game))
-            {
-                return (false, null);
-            }
-
-            await _nodeLocator.SaveAsync(gameCodeStr, _publicIp);
-            _logger.LogDebug("Created game with code {0}.", game.Code);
-
-            await _eventManager.CallAsync(new GameCreatedEvent(game));
-
-            return (true, game);
-        }
-
-        public Game Find(GameCode code)
+        public Game? Find(GameCode code)
         {
             _games.TryGetValue(code, out var game);
             return game;
@@ -98,7 +62,7 @@ namespace Impostor.Server.Net.Manager
                 x.Value.PlayerCount < x.Value.Options.MaxPlayers))
             {
                 // Check for options.
-                if (!map.HasFlag((MapFlags)(1 << game.Options.MapId)))
+                if (!map.HasFlag((MapFlags)(1 << (byte)game.Options.Map)))
                 {
                     continue;
                 }
@@ -145,6 +109,56 @@ namespace Impostor.Server.Net.Manager
             await _nodeLocator.RemoveAsync(GameCodeParser.IntToGameName(gameCode));
 
             await _eventManager.CallAsync(new GameDestroyedEvent(game));
+        }
+
+        public async ValueTask<IGame?> CreateAsync(IClient? owner, GameOptionsData options)
+        {
+            var @event = new GameCreationEvent(this, owner);
+            await _eventManager.CallAsync(@event);
+
+            if (@event.IsCancelled)
+            {
+                return null;
+            }
+
+            // TODO: Prevent duplicates when using server redirector using INodeProvider.
+            var (success, game) = await TryCreateAsync(options, @event.GameCode);
+
+            for (var i = 0; i < 10 && !success; i++)
+            {
+                (success, game) = await TryCreateAsync(options);
+            }
+
+            if (!success || game == null)
+            {
+                throw new ImpostorException("Could not create new game"); // TODO: Fix generic exception.
+            }
+
+            return game;
+        }
+
+        public ValueTask<IGame?> CreateAsync(GameOptionsData options)
+        {
+            return CreateAsync(null, options);
+        }
+
+        private async ValueTask<(bool Success, Game? Game)> TryCreateAsync(GameOptionsData options, GameCode? desiredGameCode = null)
+        {
+            var gameCode = desiredGameCode ?? _gameCodeFactory.Create();
+            var gameCodeStr = gameCode.Code;
+            var game = ActivatorUtilities.CreateInstance<Game>(_serviceProvider, _publicIp, gameCode, options);
+
+            if (await _nodeLocator.ExistsAsync(gameCodeStr) || !_games.TryAdd(gameCode, game))
+            {
+                return (false, null);
+            }
+
+            await _nodeLocator.SaveAsync(gameCodeStr, _publicIp);
+            _logger.LogDebug("Created game with code {0}.", game.Code);
+
+            await _eventManager.CallAsync(new GameCreatedEvent(game));
+
+            return (true, game);
         }
     }
 }

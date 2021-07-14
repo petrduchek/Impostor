@@ -2,9 +2,11 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
-using Impostor.Api.Reactor;
+using Impostor.Api.Events.Managers;
+using Impostor.Api.Net.Messages.C2S;
 using Impostor.Hazel;
 using Impostor.Hazel.Udp;
+using Impostor.Server.Events.Client;
 using Impostor.Server.Net.Hazel;
 using Impostor.Server.Net.Manager;
 using Microsoft.Extensions.Logging;
@@ -14,19 +16,19 @@ namespace Impostor.Server.Net
 {
     internal class Matchmaker
     {
+        private readonly IEventManager _eventManager;
         private readonly ClientManager _clientManager;
         private readonly ObjectPool<MessageReader> _readerPool;
-        private readonly ILogger<Matchmaker> _logger;
         private readonly ILogger<HazelConnection> _connectionLogger;
-        private UdpConnectionListener _connection;
+        private UdpConnectionListener? _connection;
 
         public Matchmaker(
-            ILogger<Matchmaker> logger,
+            IEventManager eventManager,
             ClientManager clientManager,
             ObjectPool<MessageReader> readerPool,
             ILogger<HazelConnection> connectionLogger)
         {
-            _logger = logger;
+            _eventManager = eventManager;
             _clientManager = clientManager;
             _readerPool = readerPool;
             _connectionLogger = connectionLogger;
@@ -38,29 +40,36 @@ namespace Impostor.Server.Net
             {
                 AddressFamily.InterNetwork => IPMode.IPv4,
                 AddressFamily.InterNetworkV6 => IPMode.IPv6,
-                _ => throw new InvalidOperationException()
+                _ => throw new InvalidOperationException(),
             };
 
-            _connection = new UdpConnectionListener(ipEndPoint, _readerPool, mode);
-            _connection.NewConnection = OnNewConnection;
+            _connection = new UdpConnectionListener(ipEndPoint, _readerPool, mode)
+            {
+                NewConnection = OnNewConnection,
+            };
 
             await _connection.StartAsync();
         }
 
         public async ValueTask StopAsync()
         {
-            await _connection.DisposeAsync();
+            if (_connection != null)
+            {
+                await _connection.DisposeAsync();
+            }
         }
 
         private async ValueTask OnNewConnection(NewConnectionEventArgs e)
         {
             // Handshake.
-            ModdedHandshakeC2S.Deserialize(e.HandshakeData, out var clientVersion, out var name, out var mods);
+            HandshakeC2S.Deserialize(e.HandshakeData, out var clientVersion, out var name, out _, out _, out _);
 
             var connection = new HazelConnection(e.Connection, _connectionLogger);
 
+            await _eventManager.CallAsync(new ClientConnectionEvent(connection, e.HandshakeData));
+
             // Register client
-            await _clientManager.RegisterConnectionAsync(connection, name, clientVersion, mods);
+            await _clientManager.RegisterConnectionAsync(connection, name, clientVersion);
         }
     }
 }
